@@ -1,0 +1,27 @@
+workspace.xml
+.DS_Store
+.tmp
+.settings
+*~
+.pyc
+*.py[co]
+aliyuncli/aliyun
+# IDEA IDE
+.idea*
+aliyuncli.egg-info/
+build/
+dist/
+# VSCode
+.vscode
+# CLI
+out/
+releases/
+resource/metas.go
+local-*
+coverage.txt
+oss/lib/ossutil_test*
+coverage.html
+coverage/
+integration/*.txt
+cli-metadata/
+__debug_bin*

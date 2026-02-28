@@ -1,0 +1,99 @@
+name: Build Rust (from source)
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - master
+
+jobs:
+  build:
+    runs-on: self-hosted
+    # If your runner label is pioneer-1-admin, use:
+    # runs-on: [self-hosted, pioneer-1-admin]
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Clean Workspace
+        run: |
+          echo "Cleaning workspace..."
+          rm -rf *
+
+      - name: Install Dependencies
+        run: |
+          export DEBIAN_FRONTEND=noninteractive
+          sudo apt-get update
+          sudo apt-get install -y \
+            git curl pkg-config g++ \
+            libssl-dev ninja-build make cmake
+
+      - name: Prepare Directories and Clone Rust
+        run: |
+          mkdir installed_binaries
+          mkdir rust_config
+          git config --global http.version HTTP/1.1
+          git clone --branch master --single-branch --depth=1 https://github.com/rust-lang/rust.git
+
+      - name: Run System Info
+        run: |
+          echo "================ CPU INFO ================"
+          cat /proc/cpuinfo
+
+          echo "================ KERNEL INFO ================"
+          uname -a
+
+          echo "================ GLIBC VERSION ================"
+          ldd --version
+
+          echo "================ OS INFO ================"
+          cat /etc/os-release
+
+      - name: Configure Rust
+        run: |
+          set -x
+          cd rust
+          ./configure \
+            --set install.prefix=$(readlink -f ../installed_binaries) \
+            --set install.sysconfdir=$(readlink -f ../rust_config)
+
+      - name: Build and Install Rust
+        run: |
+          set -x
+          cd rust
+          ./x.py build
+          ./x.py install
+          git config --global http.version HTTP/2
+
+      - name: Check Rust Version
+        run: |
+          set -x
+          ./installed_binaries/bin/rustc --version
+
+      - name: Compress Binaries
+        run: |
+          FILENAME="rust_$(date -u +"%H%M%S_%d%m%Y").tar.gz"
+          echo "FILENAME=$FILENAME" >> $GITHUB_ENV
+          tar -czvf $FILENAME installed_binaries
+
+      - name: Setup SSH Agent
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.SSH_CLOUD_V_STORE_KEY }}
+
+      - name: Upload to Cloud Server
+        run: |
+          set -x
+
+          ssh -o StrictHostKeyChecking=no cloud-store \
+            'mkdir -p /var/www/nextcloud/data/admin/files/cloud-v-builds/Rust'
+
+          ssh cloud-store \
+            'rm -f /var/www/nextcloud/data/admin/files/cloud-v-builds/Rust/*'
+
+          scp $FILENAME \
+            cloud-store:/var/www/nextcloud/data/admin/files/cloud-v-builds/Rust/
+
+          ssh cloud-store \
+            'sudo -u www-data php /var/www/nextcloud/occ files:scan --path="admin/files"'

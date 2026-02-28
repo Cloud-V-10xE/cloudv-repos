@@ -1,0 +1,114 @@
+name: Build htop (Template)
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: self-hosted
+    # If your runner has labels:
+    # runs-on: [self-hosted, pioneer-1-admin]
+
+    steps:
+      - name: Clean Workspace
+        run: |
+          rm -rf *
+
+      - name: Install Dependencies
+        run: |
+          set -eux
+          export DEBIAN_FRONTEND=noninteractive
+          sudo apt-get update
+          sudo apt-get install -y \
+            libncursesw5-dev \
+            autotools-dev \
+            autoconf \
+            automake \
+            build-essential
+
+      - name: Clone htop
+        run: |
+          set -eux
+          mkdir -p installed_binaries
+          git clone --branch main --single-branch --depth=1 https://github.com/htop-dev/htop.git
+
+      - name: Run system_info
+        run: |
+          echo '============================================================='
+          echo '                       CPU INFO START                        '
+          echo '============================================================='
+          cat /proc/cpuinfo
+          echo '============================================================='
+          echo '                       CPU INFO END                          '
+          echo '============================================================='
+
+          echo '============================================================='
+          echo '                       Kernel Info Start                        '
+          echo '============================================================='
+          uname -a
+          echo '============================================================='
+          echo '                       Kernel Info End                          '
+          echo '============================================================='
+
+          echo '============================================================='
+          echo '                       Glibc Version Start                        '
+          echo '============================================================='
+          ldd --version
+          echo '============================================================='
+          echo '                       Glibc Version End                          '
+          echo '============================================================='
+
+          echo '============================================================='
+          echo '                       OS Info Start                        '
+          echo '============================================================='
+          cat /etc/os-release
+          echo '============================================================='
+          echo '                       OS Info End                        '
+          echo '============================================================='
+
+      - name: Configure htop
+        run: |
+          set -eux
+          cd htop
+          ./autogen.sh
+          ./configure --prefix=$(readlink -f ../installed_binaries)
+
+      - name: Build htop
+        run: |
+          set -eux
+          cd htop
+          make -j32
+
+      - name: Install htop
+        run: |
+          set -eux
+          cd htop
+          make install
+
+      - name: Check htop Version
+        run: |
+          set -eux
+          ./installed_binaries/bin/htop --version
+
+      - name: Compress Binaries
+        run: |
+          set -eux
+          FILENAME="htop_$(date -u +"%H%M%S_%d%m%Y").tar.gz"
+          echo "FILENAME=$FILENAME" >> $GITHUB_ENV
+          tar -cvf "$FILENAME" ./installed_binaries
+
+      - name: Setup SSH
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.SSH_CLOUD_V_STORE_ID }}
+
+      - name: Upload to Cloud
+        run: |
+          set -eux
+          ssh cloud-store 'mkdir -p /var/www/nextcloud/data/admin/files/cloud-v-builds/htop'
+          ssh cloud-store 'rm /var/www/nextcloud/data/admin/files/cloud-v-builds/htop/*' || true
+          scp "$FILENAME" cloud-store:/var/www/nextcloud/data/admin/files/cloud-v-builds/htop/
+          ssh cloud-store 'sudo -u www-data php /var/www/nextcloud/occ files:scan --path="admin/files"'

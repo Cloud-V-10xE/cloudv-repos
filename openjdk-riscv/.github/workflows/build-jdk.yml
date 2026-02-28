@@ -1,0 +1,168 @@
+name: Build OpenJDK for RISC-V
+
+on:
+  workflow_dispatch:
+  push:
+  schedule:
+    - cron: "0 0 1 * *"
+
+jobs:
+  build:
+    runs-on: RISCV64
+    permissions:
+      contents: write
+    outputs:
+      tag_name: ${{ steps.get-latest-tag.outputs.tag_name }}
+      release_name: ${{ steps.get-version.outputs.release_name }}
+      asset_name: ${{ steps.get-version.outputs.asset_name }}
+      asset_path: ${{ steps.get-version.outputs.asset_path }}
+
+    steps:
+      - name: Install dependencies
+        run: |
+         export DEBIAN_FRONTEND=noninteractive
+         sudo apt-get update
+         sudo apt remove openjdk-* -y
+         sudo apt-get install -y \
+           build-essential \
+           autoconf \
+           make \
+           zip \
+           unzip \
+           file \
+           pkg-config \
+           libx11-dev \
+           libxext-dev \
+           libxrender-dev \
+           libxtst-dev \
+           libxt-dev \
+           libcups2-dev \
+           libfontconfig1-dev \
+           libasound2-dev \
+           libffi-dev \
+           libfreetype6-dev \
+           libpng-dev \
+           libjpeg-dev \
+           ca-certificates \
+           locales \
+           wget \
+           curl \
+           git \
+           python3 \
+           gawk \
+           pandoc \
+           xsltproc \
+           gnutls-bin \
+           git \
+           openjdk-25-jdk \
+           tree \
+           libx11-dev \
+           libxext-dev \
+           libxrender-dev \
+           libxrandr-dev \
+           libxtst-dev \
+           libxt-dev
+
+           BOOT_JAVA_HOME=$(dirname "$(dirname "$(readlink -f "$(which javac)")")")
+           echo "BOOT_JAVA_HOME=$BOOT_JAVA_HOME" >> "$GITHUB_ENV"
+           echo "BOOT_JAVA_HOME=$BOOT_JAVA_HOME" >> "$GITHUB_OUTPUT"
+
+
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      
+      - name: Check environment
+        run: |
+          set -eux
+          uname -a
+          gcc --version
+          g++ --version
+          ldd --version
+
+      - name: Clone OpenJDK and checkout latest tag
+        id: get-latest-tag
+        run: |
+          set -eux
+
+          # Tweak Git to be more resilient on CI
+          git config --global http.version HTTP/2
+          git config https.postBuffer 1048576000
+          git config http.postBuffer 1048576000
+
+          rm -rf jdk installed_binaries
+          git clone --depth=1 --no-tags --no-tags https://github.com/openjdk/jdk.git
+          cd jdk
+          
+          # Fetch only tag references (without full history)
+          git fetch --tags --depth=1
+
+          LATEST_TAG=$(git tag -l "jdk*" | sort -V | tail -n 1)
+          echo "Checking out $LATEST_TAG"
+
+          # Fetch and checkout just that tag commit (still shallow)
+          git fetch --depth=1 origin tag $LATEST_TAG
+          git checkout FETCH_HEAD
+
+          echo "tag_name=$LATEST_TAG" >> "$GITHUB_OUTPUT"
+      
+      - name: Configure
+        run: |
+          cd jdk
+          bash configure
+
+      - name: Build
+        run: |
+          cd jdk
+          make JOBS=32 images
+
+      - name: Verify installation
+        run: |
+          $GITHUB_WORKSPACE/jdk/build/linux-riscv64-server-release/images/jdk/bin/java --version
+
+      - name: Get JDK version and set outputs
+        id: get-version
+        run: |
+          set -eux
+
+          cd $GITHUB_WORKSPACE/jdk/build/linux-riscv64-server-release/images
+          
+          JDK_VERSION=$("./jdk/bin/java" --version | head -n1 | awk '{print $2}')
+          echo "Detected built JDK version: $JDK_VERSION"
+          ASSET_NAME="openjdk-${JDK_VERSION}-riscv64-linux.tar.gz"
+          ASSET_PATH="$GITHUB_WORKSPACE/${ASSET_NAME}"
+
+          echo "release_name=OpenJDK ${JDK_VERSION} RISC-V" >> $GITHUB_OUTPUT
+          echo "asset_name=$ASSET_NAME" >> $GITHUB_OUTPUT
+          echo "asset_path=$ASSET_PATH" >> $GITHUB_OUTPUT
+
+      - name: Package binaries
+        run: |
+          tar -czf ${{ steps.get-version.outputs.asset_path }} -C ${{ github.workspace }}/jdk/build/linux-riscv64-server-release/images jdk
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.get-version.outputs.asset_name }}
+          path: ${{ steps.get-version.outputs.asset_path }}
+
+      - name: Create or push to tag
+        run: |
+          TAG=${{ steps.get-latest-tag.outputs.tag_name }}
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
+            echo "✅ Tag $TAG already exists. Skipping tag creation." 
+          else
+            echo "🆕 Tag $TAG does not exist. Creating and pushing..."
+            git tag "$TAG"
+            git push origin "$TAG"
+          fi
+
+      - name: Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.get-latest-tag.outputs.tag_name }}
+          files: ${{ steps.get-version.outputs.asset_path }}

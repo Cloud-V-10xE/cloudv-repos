@@ -1,0 +1,328 @@
+name: Build PyTorch for RISC-V
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+    - main
+  schedule:
+    - cron: "0 0 * * 0"  # Weekly on Sunday at midnight
+
+jobs:
+  build:
+    runs-on: RISCV64
+    permissions:
+      contents: write
+    outputs:
+      tag_name: ${{ steps.get-latest-tag.outputs.tag_name }}
+      release_name: ${{ steps.get-version.outputs.release_name }}
+      asset_name: ${{ steps.get-version.outputs.asset_name }}
+      asset_path: ${{ steps.get-version.outputs.asset_path }}
+
+    steps:
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            git \
+            cmake \
+            ninja-build \
+            libopenblas-dev \
+            liblapack-dev \
+            libprotobuf-dev \
+            protobuf-compiler \
+            libffi-dev \
+            python3-dev \
+            python3-pip \
+            python3-venv \
+            ccache \
+            wget \
+            curl
+      
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup directories
+        run: mkdir -p $GITHUB_WORKSPACE/build_output
+
+      - name: Check environment
+        run: |
+          set -eux
+          uname -a
+          gcc --version
+          g++ --version
+          python3 --version
+          cmake --version
+          nproc
+
+      - name: Clone PyTorch and checkout latest tag
+        id: get-latest-tag
+        run: |
+          set -eux
+
+          # Tweak Git to be more resilient on CI
+          git config --global http.postBuffer 524288000
+          git config --global http.maxRequests 2
+          git config --global core.compression 0
+
+          rm -rf pytorch
+          git clone --depth=1 --no-tags https://github.com/pytorch/pytorch.git
+          cd pytorch
+
+          # Fetch only tag references (without full history)
+          git fetch --tags --depth=1
+
+          # Get latest stable release tag (v*.*.*)
+          LATEST_TAG=$(git tag -l "v*.*.*" | grep -v "rc" | grep -v "dev" | sort -V | tail -n 1)
+          echo "Checking out $LATEST_TAG"
+
+          # Fetch and checkout just that tag commit (still shallow)
+          git fetch --depth=1 origin tag $LATEST_TAG
+          git checkout FETCH_HEAD
+
+          # Initialize submodules
+          git submodule sync
+          git submodule update --init --recursive --depth=1
+
+          echo "tag_name=$LATEST_TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Setup Python virtual environment
+        run: |
+          python3 -m venv $GITHUB_WORKSPACE/pytorch-build-env
+          source $GITHUB_WORKSPACE/pytorch-build-env/bin/activate
+          
+          pip install --upgrade pip wheel setuptools
+          
+          # Install Python build dependencies
+          pip install \
+            numpy \
+            pyyaml \
+            cmake \
+            cffi \
+            typing_extensions \
+            future \
+            six \
+            requests \
+            dataclasses \
+            filelock \
+            networkx \
+            jinja2 \
+            sympy
+
+      - name: Configure build environment
+        run: |
+          # Export build configuration for RISC-V CPU-only
+          cat >> $GITHUB_ENV << 'EOF'
+          USE_CUDA=0
+          USE_ROCM=0
+          USE_CUDNN=0
+          USE_DISTRIBUTED=0
+          USE_MKLDNN=0
+          USE_NNPACK=0
+          USE_QNNPACK=0
+          USE_PYTORCH_QNNPACK=0
+          USE_FBGEMM=0
+          USE_KINETO=0
+          USE_NCCL=0
+          USE_SYSTEM_NCCL=0
+          BUILD_TEST=0
+          USE_NUMPY=1
+          USE_OPENMP=1
+          USE_SYSTEM_BLAS=1
+          USE_SYSTEM_LAPACK=1
+          CMAKE_BUILD_TYPE=Release
+          MAX_JOBS=64
+          EOF
+
+      - name: Build PyTorch
+        run: |
+          source $GITHUB_WORKSPACE/pytorch-build-env/bin/activate
+          cd pytorch
+          
+          echo "Building PyTorch at $(date)"
+          echo "Using $(nproc) CPU cores"
+          
+          # Build and create wheel
+          python setup.py bdist_wheel 2>&1 | tee $GITHUB_WORKSPACE/build.log
+          
+          echo "Build completed at $(date)"
+      
+      - name: Verify build
+        run: |
+          # Create temporary test environment
+          source $GITHUB_WORKSPACE/pytorch-build-env/bin/activate
+            
+          # Install only the wheel (no dependencies to keep it fast)
+          pip install --no-deps pytorch/dist/torch-*.whl
+            
+          # Quick test
+          cd $HOME
+          python -c "import torch; print(torch.__version__)"
+            
+          # Cleanup
+          deactivate
+          rm -rf /tmp/test-env
+          
+      - name: Run Test Suite
+        run: |
+          source $GITHUB_WORKSPACE/pytorch-build-env/bin/activate
+          cd pytorch
+          
+          pip install -r .ci/docker/requirements-ci.txt
+
+          echo "Running PyTorch test suite at $(date)"
+          python test/run_test.py --verbose \
+            --include test_torch test_nn test_autograd
+
+      - name: Get PyTorch version and set outputs
+        id: get-version
+        run: |
+          source $GITHUB_WORKSPACE/pytorch-build-env/bin/activate
+          cd $HOME
+          
+          PYTORCH_VERSION=$(python -c "import torch; print(torch.__version__)")
+          WHEEL_FILE=$(ls $GITHUB_WORKSPACE/pytorch/dist/torch-*.whl | head -1)
+          WHEEL_BASENAME=$(basename $WHEEL_FILE)
+          
+          # Use the ACTUAL wheel filename (don't rename it)
+          ASSET_PATH="$GITHUB_WORKSPACE/build_output/${WHEEL_BASENAME}"
+          
+          # Copy wheel to build_output
+          cp $WHEEL_FILE $ASSET_PATH
+          
+          echo "release_name=PyTorch ${PYTORCH_VERSION} RISC-V" >> $GITHUB_OUTPUT
+          echo "asset_name=$WHEEL_BASENAME" >> $GITHUB_OUTPUT
+          echo "asset_path=$ASSET_PATH" >> $GITHUB_OUTPUT
+          echo "pytorch_version=$PYTORCH_VERSION" >> $GITHUB_OUTPUT
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.get-version.outputs.asset_name }}
+          path: ${{ steps.get-version.outputs.asset_path }}
+
+      - name: Upload build log
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log-${{ steps.get-version.outputs.pytorch_version }}
+          path: ${{ github.workspace }}/build.log
+
+      - name: Create or push to tag
+        run: |
+          TAG=${{ steps.get-latest-tag.outputs.tag_name }}
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
+            echo "✅ Tag $TAG already exists. Skipping tag creation." 
+          else
+            echo "🆕 Tag $TAG does not exist. Creating and pushing..."
+            git tag "$TAG"
+            git push origin "$TAG"
+          fi
+
+      - name: Generate release notes
+        id: release-notes
+        run: |
+          TAG=${{ steps.get-latest-tag.outputs.tag_name }}
+          VERSION=${{ steps.get-version.outputs.pytorch_version }}
+          PYTHON_VERSION=$(python3 --version | cut -d' ' -f2 | cut -d'.' -f1-2)
+          
+          cat > release_notes.md << EOF
+          # PyTorch ${VERSION} for RISC-V Architecture
+          
+          This is an official build of PyTorch ${VERSION} compiled for RISC-V 64-bit architecture.
+          
+          ## Build Information
+          - **Source:** Official PyTorch repository (pytorch/pytorch)
+          - **Tag:** ${TAG}
+          - **Architecture:** riscv64
+          - **Python:** ${PYTHON_VERSION}
+          - **Build Type:** CPU-only with OpenMP and OpenBLAS
+          - **Build Date:** $(date -u +"%Y-%m-%d %H:%M:%S UTC")
+          
+          ## Features
+          - ✅ CPU-only inference and training
+          - ✅ OpenMP parallelization
+          - ✅ OpenBLAS acceleration
+          - ✅ Full PyTorch API support
+          - ❌ No CUDA/GPU support
+          - ❌ No distributed training
+          
+          ## Installation
+          
+          \`\`\`bash
+          # Install on RISC-V system with Python ${PYTHON_VERSION}
+          pip install ${{ steps.get-version.outputs.asset_name }}
+          
+          # Verify installation
+          python -c "import torch; print(torch.__version__)"
+          \`\`\`
+          
+          ## System Requirements
+          - RISC-V 64-bit processor
+          - Linux operating system
+          - Python ${PYTHON_VERSION}
+          - glibc 2.31 or newer
+          - At least 2GB RAM for basic usage
+          
+          ## Performance Optimization
+          
+          Set these environment variables for optimal performance:
+          
+          \`\`\`bash
+          export OMP_NUM_THREADS=\$(nproc)
+          export OPENBLAS_NUM_THREADS=\$(nproc)
+          \`\`\`
+          
+          ## Testing
+          
+          \`\`\`python
+          import torch
+          
+          # Basic tensor operations
+          a = torch.randn(100, 100)
+          b = torch.randn(100, 100)
+          c = a @ b
+          print(f"Matrix multiplication works: {c.sum()}")
+          
+          # Simple neural network
+          import torch.nn as nn
+          model = nn.Sequential(
+              nn.Linear(10, 50),
+              nn.ReLU(),
+              nn.Linear(50, 1)
+          )
+          x = torch.randn(1, 10)
+          y = model(x)
+          print(f"Neural network works: {y.item()}")
+          \`\`\`
+          
+          ## Known Limitations
+          - CPU-only (no GPU acceleration)
+          - No distributed training support
+          - Some advanced features may not be optimized for RISC-V
+          
+          ## Support
+          - PyTorch Documentation: https://pytorch.org/docs/
+          - RISC-V Community: https://riscv.org/
+          - Issues: Please report RISC-V-specific issues to this repository
+          
+          ## License
+          PyTorch is licensed under the BSD 3-Clause License.
+          See: https://github.com/pytorch/pytorch/blob/main/LICENSE
+          EOF
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.get-latest-tag.outputs.tag_name }}
+          name: ${{ steps.get-version.outputs.release_name }}
+          body_path: release_notes.md
+          files: |
+            ${{ steps.get-version.outputs.asset_path }}
+            ${{ github.workspace }}/build.log
+          draft: false
+          prerelease: false

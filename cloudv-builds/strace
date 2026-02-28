@@ -1,0 +1,95 @@
+name: Build strace from source
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - master
+
+jobs:
+  build:
+    runs-on: self-hosted
+    # If your runner label is pioneer-1-admin:
+    # runs-on: [self-hosted, pioneer-1-admin]
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Clean Workspace
+        run: |
+          echo "Cleaning workspace..."
+          rm -rf *
+
+      - name: Install Dependencies
+        run: |
+          export DEBIAN_FRONTEND=noninteractive
+          sudo apt-get update
+          sudo apt-get install -y autoconf git build-essential
+
+      - name: Prepare Directories and Clone strace
+        run: |
+          mkdir installed_binaries
+          git clone --branch master --single-branch --depth=1 https://github.com/strace/strace.git
+
+      - name: Run System Info
+        run: |
+          echo "================ CPU INFO ================"
+          cat /proc/cpuinfo
+
+          echo "================ KERNEL INFO ================"
+          uname -a
+
+          echo "================ GLIBC VERSION ================"
+          ldd --version
+
+          echo "================ OS INFO ================"
+          cat /etc/os-release
+
+      - name: Configure strace
+        run: |
+          set -x
+          export LDFLAGS='-static -pthread'
+          cd strace
+          ./bootstrap
+          ./configure --prefix=$(readlink -f ../installed_binaries)
+
+      - name: Build and Install strace
+        run: |
+          set -x
+          cd strace
+          make -j32
+          # make check # Skipped for time
+          make install
+
+      - name: Check strace Version
+        run: |
+          set -x
+          ./installed_binaries/bin/strace --version
+
+      - name: Compress Binaries
+        run: |
+          FILENAME="strace_$(date -u +"%H%M%S_%d%m%Y").tar.gz"
+          echo "FILENAME=$FILENAME" >> $GITHUB_ENV
+          tar -czvf $FILENAME installed_binaries
+
+      - name: Setup SSH Agent
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.SSH_CLOUD_V_STORE_KEY }}
+
+      - name: Upload to Cloud Server
+        run: |
+          set -x
+
+          ssh -o StrictHostKeyChecking=no cloud-store \
+            'mkdir -p /var/www/nextcloud/data/admin/files/cloud-v-builds/strace'
+
+          ssh cloud-store \
+            'rm -f /var/www/nextcloud/data/admin/files/cloud-v-builds/strace/*'
+
+          scp $FILENAME \
+            cloud-store:/var/www/nextcloud/data/admin/files/cloud-v-builds/strace/
+
+          ssh cloud-store \
+            'sudo -u www-data php /var/www/nextcloud/occ files:scan --path="admin/files"'

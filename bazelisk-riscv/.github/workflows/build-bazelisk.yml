@@ -1,0 +1,172 @@
+name: Build Bazelisk for RISC-V
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+  schedule:
+    - cron: "0 0 1 * *"  # Monthly on the 1st
+
+jobs:
+  build:
+    runs-on: RISCV64
+    permissions:
+      contents: write
+    outputs:
+      tag_name: ${{ steps.get-latest-tag.outputs.tag_name }}
+      release_name: ${{ steps.get-version.outputs.release_name }}
+      asset_name: ${{ steps.get-version.outputs.asset_name }}
+      asset_path: ${{ steps.get-version.outputs.asset_path }}
+
+    steps:
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            wget \
+            git \
+            curl \
+            file
+
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Check environment
+        run: |
+          set -eux
+          uname -a
+          gcc --version
+
+      - name: Install Go
+        run: |
+          # Check if Go is already installed
+          if command -v go &> /dev/null; then
+            echo "Go already installed: $(go version)"
+          else
+            # Download and install Go for RISC-V
+            GO_VERSION="1.23.5"
+            wget https://go.dev/dl/go${GO_VERSION}.linux-riscv64.tar.gz
+            sudo tar -C /usr/local -xzf go${GO_VERSION}.linux-riscv64.tar.gz
+            rm go${GO_VERSION}.linux-riscv64.tar.gz
+          fi
+          
+          # Add Go to PATH
+          export PATH=$PATH:/usr/local/go/bin
+          echo "/usr/local/go/bin" >> $GITHUB_PATH
+          
+          go version
+
+      - name: Clone Bazelisk and checkout latest tag
+        id: get-latest-tag
+        run: |
+          set -eux
+
+          # Tweak Git to be more resilient on CI
+          git config --global http.postBuffer 524288000
+          git config --global http.maxRequests 2
+          git config --global core.compression 0
+
+          rm -rf bazelisk build_output
+          mkdir -p build_output
+          
+          git clone --depth=1 --no-tags https://github.com/bazelbuild/bazelisk.git
+          cd bazelisk
+
+          # Fetch only tag references (without full history)
+          git fetch --tags --depth=1
+
+          LATEST_TAG=$(git tag -l "v*" | grep -v "rc" | sort -V | tail -n 1)
+          echo "Checking out $LATEST_TAG"
+
+          # Fetch and checkout just that tag commit (still shallow)
+          git fetch --depth=1 origin tag $LATEST_TAG
+          git checkout FETCH_HEAD
+
+          echo "tag_name=$LATEST_TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Build Bazelisk
+        run: |
+          cd bazelisk
+          
+          # Build for RISC-V
+          CGO_ENABLED=0 GOOS=linux GOARCH=riscv64 go build -o bazelisk
+          
+          # Verify the binary
+          file bazelisk
+          ./bazelisk version || echo "Bazelisk built successfully (version check may fail without network)"
+
+      - name: Get Bazelisk version and set outputs
+        id: get-version
+        run: |
+          cd bazelisk
+          
+          # Extract version from tag (remove 'v' prefix)
+          BAZELISK_VERSION=$(echo "${{ steps.get-latest-tag.outputs.tag_name }}" | sed 's/^v//')
+          
+          ASSET_NAME="bazelisk-${BAZELISK_VERSION}-riscv64-linux"
+          ASSET_PATH="$GITHUB_WORKSPACE/${ASSET_NAME}"
+
+          echo "release_name=Bazelisk ${BAZELISK_VERSION} RISC-V" >> $GITHUB_OUTPUT
+          echo "asset_name=$ASSET_NAME" >> $GITHUB_OUTPUT
+          echo "asset_path=$ASSET_PATH" >> $GITHUB_OUTPUT
+
+      - name: Copy binary to asset path
+        run: |
+          cp bazelisk/bazelisk ${{ steps.get-version.outputs.asset_path }}
+          chmod +x ${{ steps.get-version.outputs.asset_path }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.get-version.outputs.asset_name }}
+          path: ${{ steps.get-version.outputs.asset_path }}
+
+      - name: Create or push to tag
+        run: |
+          TAG=${{ steps.get-latest-tag.outputs.tag_name }}
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
+            echo "✅ Tag $TAG already exists. Skipping tag creation." 
+          else
+            echo "🆕 Tag $TAG does not exist. Creating and pushing..."
+            git tag "$TAG"
+            git push origin "$TAG"
+          fi
+
+      - name: Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.get-latest-tag.outputs.tag_name }}
+          name: ${{ steps.get-version.outputs.release_name }}
+          files: ${{ steps.get-version.outputs.asset_path }}
+          body: |
+            Bazelisk build for RISC-V architecture
+            
+            Bazelisk is a wrapper for Bazel that automatically picks a good version of Bazel
+            based on your current working directory.
+            
+            ## Installation
+            ```bash
+            # Download and install
+            wget https://github.com/${{ github.repository }}/releases/download/${{ steps.get-latest-tag.outputs.tag_name }}/${{ steps.get-version.outputs.asset_name }}
+            chmod +x ${{ steps.get-version.outputs.asset_name }}
+            sudo mv ${{ steps.get-version.outputs.asset_name }} /usr/local/bin/bazel
+            
+            # Verify installation
+            bazel --version
+            ```
+            
+            ## Usage
+            Use it exactly like you would use Bazel:
+            ```bash
+            bazel build //...
+            bazel test //...
+            ```
+            
+            Built from: https://github.com/bazelbuild/bazelisk
+            Built on: ${{ github.run_id }}

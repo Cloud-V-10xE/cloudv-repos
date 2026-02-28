@@ -1,0 +1,35 @@
+name: Create and Transfer Test File
+
+on:
+  workflow_dispatch:
+
+jobs:
+  create-and-transfer:
+    runs-on: self-hosted
+    # Ensure your runner label matches your Jenkins node
+    # runs-on: [self-hosted, pioneer-1-admin]
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Clean Workspace
+        run: |
+          echo "Cleaning workspace..."
+          rm -rf *
+
+      - name: Create File
+        run: |
+          export FILENAME="test-file.txt"
+          touch "$FILENAME"
+
+      - name: Setup SSH Agent
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.SSH_CLOUD_V_STORE_KEY }}
+
+      - name: Transfer File to Nextcloud
+        run: |
+          set -x
+          scp "$FILENAME" cloud-store:/var/www/nextcloud/data/admin/files/cloud-v-builds
+          ssh cloud-store 'sudo -u www-data php /var/www/nextcloud/occ files:scan --path="admin/files"'

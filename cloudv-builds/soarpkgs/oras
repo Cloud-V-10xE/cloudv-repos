@@ -1,0 +1,129 @@
+name: Build ORAS for RISC-V
+
+on:
+  workflow_dispatch:
+  push:
+  schedule:
+    - cron: "0 0 1 * *"
+
+jobs:
+  build:
+    runs-on: [self-hosted, RISCV64]
+
+    env:
+      # Package details
+      PKG_NAME: oras
+      PKG_REPO: https://github.com/oras-project/oras/
+
+      # General configuration
+      USER_AGENT: Mozilla/5.0
+      EXCLUDE_CACHED: "YES"
+      FORCE_REBUILD_ALL: "NO"
+      KEEP_LOGS: "YES"
+      NOTIFY_DISCORD: "NO"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Workspace
+        run: |
+          set -eux
+
+          ARCH=$(uname -m)
+          PKG_WRKSP="${GITHUB_WORKSPACE}/main/${ARCH}-Linux/${PKG_NAME}"
+
+          echo "PKG_WRKSP=$PKG_WRKSP" >> $GITHUB_ENV
+          echo "SYSTMP=${GITHUB_WORKSPACE}/tmp" >> $GITHUB_ENV
+          echo "LOCAL_BIN=${GITHUB_WORKSPACE}/.local/bin" >> $GITHUB_ENV
+
+          mkdir -p "$PKG_WRKSP"
+          mkdir -p "$SYSTMP"
+          mkdir -p "$LOCAL_BIN"
+
+          sudo apt-get update
+          sudo apt-get install -y \
+            bc coreutils curl dos2unix fdupes jq moreutils wget \
+            apt-transport-https apt-utils ca-certificates gnupg2 \
+            p7zip-full rename rsync software-properties-common \
+            texinfo tmux util-linux git make
+
+      - name: Log Build Details
+        run: |
+          set -eux
+
+          ARCH=$(uname -m)
+          HOSTNAME=$(hostname)
+          USER=$(whoami)
+
+          {
+            echo "===== Build Environment ====="
+            echo "Runner Name     : $RUNNER_NAME"
+            echo "User            : $USER"
+            echo "Hostname        : $HOSTNAME"
+            echo "Architecture    : $ARCH"
+            echo "Workspace       : $GITHUB_WORKSPACE"
+            echo ""
+            echo "===== Package Details ====="
+            echo "Package Name    : $PKG_NAME"
+            echo "Package Repo    : $PKG_REPO"
+            echo "Package Wrksp   : $PKG_WRKSP"
+            echo "User Agent      : $USER_AGENT"
+            echo "Timestamp       : $(date -Iseconds)"
+          } > "$PKG_WRKSP/build_details.log"
+
+          cat "$PKG_WRKSP/build_details.log"
+
+      - name: Setup Repository
+        run: |
+          set -eux
+          cd "$PKG_WRKSP"
+          git clone --depth 1 --recurse-submodules "$PKG_REPO" "$PKG_NAME"
+          cd "$PKG_NAME"
+          ls -la
+
+      - name: Build Package
+        run: |
+          set -euxo pipefail
+
+          cd "$PKG_WRKSP/$PKG_NAME"
+
+          echo "[*] Installing Go..."
+          GO_VERSION="1.23.11"
+          wget -q "https://go.dev/dl/go${GO_VERSION}.linux-$(uname -m).tar.gz"
+
+          rm -rf "$LOCAL_BIN/go"
+          tar -C "$LOCAL_BIN" -xzf "go${GO_VERSION}.linux-$(uname -m).tar.gz"
+
+          echo "$LOCAL_BIN/go/bin" >> $GITHUB_PATH
+
+          echo "[*] Go version:"
+          go version
+
+          echo "[*] Running: make build-linux-riscv64"
+          make build-linux-riscv64
+
+          echo "[✓] Build completed"
+
+      - name: Archive Build Logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs
+          path: main/**/build_details.log
+          if-no-files-found: ignore
+
+      - name: Cleanup
+        if: always()
+        run: |
+          if [ "$KEEP_LOGS" != "YES" ]; then
+            rm -rf "$SYSTMP"
+          fi
+
+      - name: Success Message
+        if: success()
+        run: echo "Pipeline completed successfully"
+
+      - name: Failure Message
+        if: failure()
+        run: echo "Pipeline failed - check build logs"

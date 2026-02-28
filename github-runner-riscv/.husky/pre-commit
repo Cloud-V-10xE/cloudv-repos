@@ -1,0 +1,1 @@
+cd src/Misc/expressionFunc/hashFiles && npx lint-staged

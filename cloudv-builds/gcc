@@ -1,0 +1,113 @@
+name: Build GCC (Template)
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: self-hosted
+    # If your runner has labels:
+    # runs-on: [self-hosted, pioneer-1-admin]
+
+    steps:
+      - name: Clean Workspace
+        run: |
+          rm -rf *
+
+      - name: Install Dependencies
+        run: |
+          set -eux
+          export DEBIAN_FRONTEND=noninteractive
+          sudo apt update
+          sudo apt-get install -y gcc libc6-dev make
+
+      - name: Run system_info
+        run: |
+          echo '============================================================='
+          echo '                       CPU INFO START                        '
+          echo '============================================================='
+          cat /proc/cpuinfo
+          echo '============================================================='
+          echo '                       CPU INFO END                          '
+          echo '============================================================='
+
+          echo '============================================================='
+          echo '                       Kernel Info Start                        '
+          echo '============================================================='
+          uname -a
+          echo '============================================================='
+          echo '                       Kernel Info End                          '
+          echo '============================================================='
+
+          echo '============================================================='
+          echo '                       Glibc Version Start                        '
+          echo '============================================================='
+          ldd --version
+          echo '============================================================='
+          echo '                       Glibc Version End                          '
+          echo '============================================================='
+
+          echo '============================================================='
+          echo '                       OS Info Start                        '
+          echo '============================================================='
+          cat /etc/os-release
+          echo '============================================================='
+          echo '                       OS Info End                        '
+          echo '============================================================='
+
+      - name: Clone GCC
+        run: |
+          set -eux
+          mkdir -p installed_binaries
+          git clone --single-branch --depth=1 git://gcc.gnu.org/git/gcc.git
+
+      - name: Install GCC Prerequisites
+        run: |
+          set -eux
+          cd gcc
+          ./contrib/download_prerequisites
+
+      - name: Configure GCC
+        run: |
+          set -eux
+          cd gcc
+          ./configure \
+            --prefix=$(readlink -f ../installed_binaries) \
+            --disable-multilib \
+            --enable-languages=c,c++,fortran \
+            --disable-werror
+
+      - name: Build and Install GCC
+        run: |
+          set -eux
+          cd gcc
+          make -j32
+          make install
+
+      - name: Check GCC Version
+        run: |
+          set -eux
+          ./installed_binaries/bin/gcc --version
+
+      - name: Compress Binaries
+        run: |
+          set -eux
+          FILENAME="gcc_$(date -u +"%H%M%S_%d%m%Y").tar.gz"
+          echo "FILENAME=$FILENAME" >> $GITHUB_ENV
+          tar -cvf "$FILENAME" ./installed_binaries
+
+      - name: Setup SSH
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.SSH_CLOUD_V_STORE_ID }}
+
+      - name: Upload to Cloud
+        run: |
+          set -eux
+          ssh cloud-store 'mkdir -p /var/www/nextcloud/data/admin/files/cloud-v-builds/gcc'
+          ssh cloud-store 'rm /var/www/nextcloud/data/admin/files/cloud-v-builds/gcc/*' || true
+          scp "$FILENAME" cloud-store:/var/www/nextcloud/data/admin/files/cloud-v-builds/gcc/
+          ssh cloud-store 'sudo -u www-data php /var/www/nextcloud/occ files:scan --path="admin/files"'

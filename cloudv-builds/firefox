@@ -1,0 +1,72 @@
+name: Build Mozilla Firefox (Template)
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: self-hosted
+    # Use your runner label if needed:
+    # runs-on: [self-hosted, pioneer-1-admin]
+
+    steps:
+      - name: Clean Workspace
+        run: |
+          rm -rf *
+
+      - name: Install Dependencies
+        run: |
+          set -eux
+          export DEBIAN_FRONTEND=noninteractive
+          sudo apt update
+          sudo apt-get install -y python3 curl python3-pip
+          python3 -m pip install --user mercurial --break-system-packages
+
+      - name: Run system_info
+        run: |
+          echo '============================================================='
+          echo '                       CPU INFO START                        '
+          echo '============================================================='
+          cat /proc/cpuinfo
+          echo '============================================================='
+          echo '                       CPU INFO END                          '
+          echo '============================================================='
+          echo '============================================================='
+          echo '                       Kernel Info Start                        '
+          echo '============================================================='
+          uname -a
+          echo '============================================================='
+          echo '                       Kernel Info End                          '
+          echo '============================================================='
+          echo '============================================================='
+          echo '                       Glibc Version Start                        '
+          echo '============================================================='
+          ldd --version
+          echo '============================================================='
+          echo '                       Glibc Version End                          '
+          echo '============================================================='
+          echo '============================================================='
+          echo '                       OS Info Start                        '
+          echo '============================================================='
+          cat /etc/os-release
+          echo '============================================================='
+          echo '                       OS Info End                        '
+          echo '============================================================='
+
+      - name: Setup Bootstrap
+        run: |
+          set -eux
+          curl -O https://hg.mozilla.org/mozilla-central/raw-file/default/python/mozboot/bin/bootstrap.py
+          git config --global http.version HTTP/1.1
+          echo | python3 bootstrap.py
+          git config --global http.version HTTP/2
+
+      - name: Build Firefox
+        run: |
+          set -eux
+          cd mozilla-unified
+          hg up -C central
+          ./mach build
