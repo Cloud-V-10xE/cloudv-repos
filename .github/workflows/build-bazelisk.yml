@@ -1,9 +1,8 @@
 name: Build Bazelisk for RISC-V
-
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 0 1 * *"  # Monthly on the 1st
+    - cron: "0 0 1 * *"
 
 jobs:
   build:
@@ -15,7 +14,6 @@ jobs:
       release_name: ${{ steps.get-version.outputs.release_name }}
       asset_name: ${{ steps.get-version.outputs.asset_name }}
       asset_path: ${{ steps.get-version.outputs.asset_path }}
-
     steps:
       - name: Install dependencies
         run: |
@@ -27,8 +25,15 @@ jobs:
             curl \
             file
 
+      - name: Clean workspace with elevated permissions
+        run: |
+          sudo rm -rf "$GITHUB_WORKSPACE"
+          mkdir -p "$GITHUB_WORKSPACE"
+
       - name: Checkout repo
         uses: actions/checkout@v4
+        with:
+          clean: false
 
       - name: Check environment
         run: |
@@ -38,81 +43,62 @@ jobs:
 
       - name: Install Go
         run: |
-          # Check if Go is already installed
           if command -v go &> /dev/null; then
             echo "Go already installed: $(go version)"
           else
-            # Download and install Go for RISC-V
             GO_VERSION="1.23.5"
             wget https://go.dev/dl/go${GO_VERSION}.linux-riscv64.tar.gz
             sudo tar -C /usr/local -xzf go${GO_VERSION}.linux-riscv64.tar.gz
             rm go${GO_VERSION}.linux-riscv64.tar.gz
           fi
-          
-          # Add Go to PATH
+
           export PATH=$PATH:/usr/local/go/bin
-          echo "/usr/local/go/bin" >> $GITHUB_PATH
-          
+          echo "/usr/local/go/bin" >> "$GITHUB_PATH"
           go version
 
       - name: Clone Bazelisk and checkout latest tag
         id: get-latest-tag
         run: |
           set -eux
-
-          # Tweak Git to be more resilient on CI
           git config --global http.postBuffer 524288000
           git config --global http.maxRequests 2
           git config --global core.compression 0
 
-          rm -rf bazelisk build_output
-          mkdir -p build_output
-          
-          git clone --depth=1 --no-tags https://github.com/bazelbuild/bazelisk.git
-          cd bazelisk
+          rm -rf "$GITHUB_WORKSPACE/bazelisk" "$GITHUB_WORKSPACE/build_output"
+          mkdir -p "$GITHUB_WORKSPACE/build_output"
 
-          # Fetch only tag references (without full history)
+          git clone --depth=1 --no-tags https://github.com/bazelbuild/bazelisk.git "$GITHUB_WORKSPACE/bazelisk"
+          cd "$GITHUB_WORKSPACE/bazelisk"
+
           git fetch --tags --depth=1
-
           LATEST_TAG=$(git tag -l "v*" | grep -v "rc" | sort -V | tail -n 1)
           echo "Checking out $LATEST_TAG"
-
-          # Fetch and checkout just that tag commit (still shallow)
-          git fetch --depth=1 origin tag $LATEST_TAG
+          git fetch --depth=1 origin tag "$LATEST_TAG"
           git checkout FETCH_HEAD
 
           echo "tag_name=$LATEST_TAG" >> "$GITHUB_OUTPUT"
 
       - name: Build Bazelisk
         run: |
-          cd bazelisk
-          
-          # Build for RISC-V
+          cd "$GITHUB_WORKSPACE/bazelisk"
           CGO_ENABLED=0 GOOS=linux GOARCH=riscv64 go build -o bazelisk
-          
-          # Verify the binary
           file bazelisk
           ./bazelisk version || echo "Bazelisk built successfully (version check may fail without network)"
 
       - name: Get Bazelisk version and set outputs
         id: get-version
         run: |
-          cd bazelisk
-          
-          # Extract version from tag (remove 'v' prefix)
           BAZELISK_VERSION=$(echo "${{ steps.get-latest-tag.outputs.tag_name }}" | sed 's/^v//')
-          
           ASSET_NAME="bazelisk-${BAZELISK_VERSION}-riscv64-linux"
           ASSET_PATH="$GITHUB_WORKSPACE/${ASSET_NAME}"
-
-          echo "release_name=Bazelisk ${BAZELISK_VERSION} RISC-V" >> $GITHUB_OUTPUT
-          echo "asset_name=$ASSET_NAME" >> $GITHUB_OUTPUT
-          echo "asset_path=$ASSET_PATH" >> $GITHUB_OUTPUT
+          echo "release_name=Bazelisk ${BAZELISK_VERSION} RISC-V" >> "$GITHUB_OUTPUT"
+          echo "asset_name=$ASSET_NAME" >> "$GITHUB_OUTPUT"
+          echo "asset_path=$ASSET_PATH" >> "$GITHUB_OUTPUT"
 
       - name: Copy binary to asset path
         run: |
-          cp bazelisk/bazelisk ${{ steps.get-version.outputs.asset_path }}
-          chmod +x ${{ steps.get-version.outputs.asset_path }}
+          cp "$GITHUB_WORKSPACE/bazelisk/bazelisk" "${{ steps.get-version.outputs.asset_path }}"
+          chmod +x "${{ steps.get-version.outputs.asset_path }}"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
