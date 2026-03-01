@@ -1,7 +1,6 @@
 name: Build coreutils for RISC-V
 on:
   workflow_dispatch:
-  push:
   schedule:
     - cron: "0 0 1 * *"
 jobs:
