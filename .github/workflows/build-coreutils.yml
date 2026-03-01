@@ -47,6 +47,8 @@ jobs:
 
       - name: Checkout repo
         uses: actions/checkout@v4
+        with:
+          clean: false
 
       - name: Setup Directories
         run: mkdir -p $GITHUB_WORKSPACE/installed_binaries
