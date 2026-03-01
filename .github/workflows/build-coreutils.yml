@@ -40,11 +40,13 @@ jobs:
            make \
            python3
 
-      - name: Clean Go module cache
+      - name: Force clean Go cache
         run: |
-          # Clean Go cache safely
+          echo "Removing Go module cache forcibly"
+          sudo rm -rf $HOME/go/pkg/mod
+          sudo rm -rf $GOPATH/pkg/mod  # just in case GOPATH is set
           go clean -modcache || true
-
+          
       - name: Checkout repo
         uses: actions/checkout@v4
         with:
