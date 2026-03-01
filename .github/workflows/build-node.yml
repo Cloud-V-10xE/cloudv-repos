@@ -4,12 +4,9 @@ on:
   workflow_dispatch:
   schedule:
     - cron: "0 0 1 * *"
-  push:
-    branches:
-      - main
 
 jobs:
-  build_and_release:
+  build:
     runs-on: RISCV64
     permissions:
       contents: write
@@ -22,123 +19,113 @@ jobs:
     steps:
       - name: Install dependencies
         run: |
-          #!/bin/bash
           set -eux
           sudo apt-get update
+          sudo apt-get install -y \
+            libatomic1 \
+            libtsan2 \
+            gcc-14 \
+            g++-14 \
+            rustup \
+            cmake \
+            build-essential \
+            libcurl4-openssl-dev \
+            wget \
+            ccache \
+            python3 \
+            file
 
-          # Install necessary packages
-          sudo apt-get install -y libatomic1 libtsan2 gcc-14 g++-14 rustup cmake build-essential libcurl4-openssl-dev wget ccache python3 file
-
-          # Set gcc-14 and g++-14 as the default compilers
           sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-14 100
           sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-14 100
           sudo ln -sf /usr/bin/gcc-14 /usr/bin/gcc
           sudo ln -sf /usr/bin/g++-14 /usr/bin/g++
 
-          # Install Rust stable version
           rustup install stable
           rustup default stable
+
+      - name: Clean workspace with elevated permissions
+        run: |
+          sudo rm -rf "$GITHUB_WORKSPACE"
+          mkdir -p "$GITHUB_WORKSPACE"
+
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          clean: false
+
       - name: Check environment
         run: |
+          set -eux
           uname -a
           gcc --version
           g++ --version
           ldd --version
           make --version
-      - name: Checkout repo
-        uses: actions/checkout@v4
 
-      - name: Setup Directories
-        run: mkdir -p $GITHUB_WORKSPACE/installed_binaries
+      - name: Setup directories
+        run: mkdir -p "$GITHUB_WORKSPACE/installed_binaries"
 
       - name: Clone Node.js and checkout latest tag
         id: get-latest-tag
         run: |
           set -eux
-
-          # Tweak Git to be more resilient on CI
           git config --global http.postBuffer 524288000
           git config --global http.maxRequests 2
           git config --global core.compression 0
 
-          rm -rf node
-          git clone --depth=1 --no-tags https://github.com/nodejs/node.git
-          cd node
+          rm -rf "$GITHUB_WORKSPACE/node"
+          git clone --depth=1 --no-tags https://github.com/nodejs/node.git "$GITHUB_WORKSPACE/node"
+          cd "$GITHUB_WORKSPACE/node"
 
-          # Fetch only tag references (without full history)
           git fetch --tags --depth=1
-
           LATEST_TAG=$(git tag -l "v*" | sort -V | tail -n 1)
           echo "Checking out $LATEST_TAG"
-
-          # Fetch and checkout just that tag commit (still shallow)
-          git fetch --depth=1 origin tag $LATEST_TAG
+          git fetch --depth=1 origin tag "$LATEST_TAG"
           git checkout FETCH_HEAD
 
           echo "tag_name=$LATEST_TAG" >> "$GITHUB_OUTPUT"
 
-          # Produce dummy artifact
-          cd "$GITHUB_WORKSPACE/installed_binaries"
-
       - name: Configure
         run: |
-          cd node
-          ./configure --prefix=$(readlink -f $GITHUB_WORKSPACE/installed_binaries) --openssl-no-asm --dest-cpu=riscv64
+          cd "$GITHUB_WORKSPACE/node"
+          ./configure \
+            --prefix="$GITHUB_WORKSPACE/installed_binaries" \
+            --openssl-no-asm \
+            --dest-cpu=riscv64
 
       - name: Build
         run: |
-          cd node
+          cd "$GITHUB_WORKSPACE/node"
           make -j$(nproc)
 
       - name: Install
         run: |
-          cd node
+          cd "$GITHUB_WORKSPACE/node"
           make install
 
       - name: Verify installation
         run: |
-          cd $GITHUB_WORKSPACE/installed_binaries
-          ./bin/node -v
-          file ./bin/node
+          "$GITHUB_WORKSPACE/installed_binaries/bin/node" -v
+          file "$GITHUB_WORKSPACE/installed_binaries/bin/node"
 
       - name: Get Node.js version and set outputs
         id: get-version
         run: |
-          NODE_VERSION=$(cd $GITHUB_WORKSPACE/installed_binaries/bin && ./node -v | cut -c 2-)
+          NODE_VERSION=$("$GITHUB_WORKSPACE/installed_binaries/bin/node" -v | cut -c 2-)
           ASSET_NAME="nodejs-${NODE_VERSION}-riscv64-linux.tar.gz"
           ASSET_PATH="$GITHUB_WORKSPACE/${ASSET_NAME}"
 
-          echo "release_name=Node.js ${NODE_VERSION} RISC-V" >> $GITHUB_OUTPUT
-          echo "asset_name=$ASSET_NAME" >> $GITHUB_OUTPUT
-          echo "asset_path=$ASSET_PATH" >> $GITHUB_OUTPUT
+          echo "release_name=Node.js ${NODE_VERSION} RISC-V" >> "$GITHUB_OUTPUT"
+          echo "asset_name=$ASSET_NAME" >> "$GITHUB_OUTPUT"
+          echo "asset_path=$ASSET_PATH" >> "$GITHUB_OUTPUT"
 
       - name: Package binaries
         run: |
-          tar -czf ${{ steps.get-version.outputs.asset_path }} -C ${{ github.workspace }}/installed_binaries .
+          tar -czf "${{ steps.get-version.outputs.asset_path }}" \
+            -C "$GITHUB_WORKSPACE/installed_binaries" .
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ steps.get-version.outputs.asset_name }}
           path: ${{ steps.get-version.outputs.asset_path }}
-
-      - name: Create or push to tag
-        run: |
-          TAG=${{ steps.get-latest-tag.outputs.tag_name }}
-
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-
-          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
-            echo "✅ Tag $TAG already exists. Skipping tag creation." 
-          else
-            echo "🆕 Tag $TAG does not exist. Creating and pushing..."
-            git tag "$TAG"
-            git push origin "$TAG"
-          fi
-
-      - name: Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ steps.get-latest-tag.outputs.tag_name }}
-          files: ${{ steps.get-version.outputs.asset_path }}
