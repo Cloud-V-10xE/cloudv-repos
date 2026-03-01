@@ -21,28 +21,6 @@ jobs:
           sudo apt update
           sudo apt install -y gh jq
 
-      - name: Debug available runs
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-        run: |
-          WORKFLOWS=(
-            "build-bazelisk.yml"
-            "build-coreutils.yml"
-            "build-strace.yml"
-            "build-binutils.yml"
-            "build-transformers.yml"
-          )
-          for WF in "${WORKFLOWS[@]}"; do
-            echo "====== $WF ======"
-            gh run list \
-              --repo "$GH_REPO" \
-              --workflow="$WF" \
-              --limit 5 \
-              --json databaseId,status,conclusion,headBranch,createdAt \
-              | jq '.[]'
-          done
-
       - name: Download latest artifacts dynamically
         env:
           GH_TOKEN: ${{ github.token }}
@@ -81,9 +59,9 @@ jobs:
 
             echo "✅ Found run ID: $LATEST_RUN_ID for $WF"
 
-            ARTIFACTS=$(gh run view "$LATEST_RUN_ID" \
-              --repo "$GH_REPO" \
-              --json artifacts \
+            # Use gh api instead of gh run view to fetch artifacts
+            ARTIFACTS=$(gh api \
+              "repos/$GH_REPO/actions/runs/$LATEST_RUN_ID/artifacts" \
               | jq -r '.artifacts[].name')
 
             if [ -z "$ARTIFACTS" ]; then
@@ -184,7 +162,6 @@ jobs:
           *Generated automatically by the Central Release workflow.*
           EOF
 
-          echo "Release notes written."
           cat release_notes.md
 
       - name: Create GitHub release
