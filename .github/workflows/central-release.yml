@@ -20,6 +20,24 @@ jobs:
         run: |
           sudo apt update
           sudo apt install -y gh jq
+      
+      - name: Debug available runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          WORKFLOWS=(
+            "build-bazelisk.yml"
+            "build-coreutils.yml"
+            "build-strace.yml"
+            "build-binutils.yml"
+            "build-transformers.yml"
+          )
+          for WF in "${WORKFLOWS[@]}"; do
+            echo "====== $WF ======"
+            gh run list --workflow="$WF" --limit 5 \
+              --json databaseId,status,conclusion,headBranch,createdAt \
+              | jq '.[]'
+          done          
 
       - name: Download latest artifacts dynamically
         env:
