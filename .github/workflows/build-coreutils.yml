@@ -40,12 +40,9 @@ jobs:
            make \
            python3
 
-      - name: Force clean Go cache
+      - name: Fix workspace permissions
         run: |
-          echo "Removing Go module cache forcibly"
-          sudo rm -rf $HOME/go/pkg/mod
-          sudo rm -rf $GOPATH/pkg/mod  # just in case GOPATH is set
-          go clean -modcache || true
+          sudo chown -R $USER:$USER $GITHUB_WORKSPACE
           
       - name: Checkout repo
         uses: actions/checkout@v4
