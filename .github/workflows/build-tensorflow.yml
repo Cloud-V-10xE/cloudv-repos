@@ -4,12 +4,9 @@ name: Build TensorFlow for RISC-V
 # Make sure you have built and released Bazelisk first!
 
 on:
-  push:
-    branches:
-      - main
   workflow_dispatch:
   schedule:
-    - cron: "0 0 3 * *"  # Monthly on the 3rd
+    - cron: "0 0 3 * *"
 
 jobs:
   build:
@@ -40,31 +37,33 @@ jobs:
             curl \
             openjdk-11-jdk
 
+      - name: Clean workspace with elevated permissions
+        run: |
+          sudo rm -rf "$GITHUB_WORKSPACE"
+          mkdir -p "$GITHUB_WORKSPACE"
+
       - name: Checkout repo
         uses: actions/checkout@v4
+        with:
+          clean: false
 
       - name: Install Bazelisk from release
         run: |
-          # Download the latest Bazelisk release from bazelisk-riscv repo
           BAZELISK_REPO="alitariq4589/bazelisk-riscv"
-          
-          # Get the latest release info
           LATEST_RELEASE=$(curl -s https://api.github.com/repos/${BAZELISK_REPO}/releases/latest)
           BAZELISK_VERSION=$(echo "$LATEST_RELEASE" | grep '"tag_name":' | sed -E 's/.*"v([^"]+)".*/\1/')
           BAZELISK_ASSET="bazelisk-${BAZELISK_VERSION}-riscv64-linux"
-          
-          # Download using the pattern: bazelisk-{version}-riscv64-linux
-          wget https://github.com/${BAZELISK_REPO}/releases/latest/download/${BAZELISK_ASSET} -O bazelisk
-          
+
+          wget "https://github.com/${BAZELISK_REPO}/releases/latest/download/${BAZELISK_ASSET}" -O bazelisk
           chmod +x bazelisk
           sudo mv bazelisk /usr/local/bin/bazel
-          
+
           bazel --version
 
       - name: Setup Python environment
         run: |
-          python3 -m venv $GITHUB_WORKSPACE/tf_env
-          source $GITHUB_WORKSPACE/tf_env/bin/activate
+          python3 -m venv "$GITHUB_WORKSPACE/tf_env"
+          source "$GITHUB_WORKSPACE/tf_env/bin/activate"
           pip install --upgrade pip
           pip install numpy wheel packaging requests opt_einsum
           pip install keras_preprocessing --no-deps
@@ -83,39 +82,31 @@ jobs:
         id: get-latest-tag
         run: |
           set -eux
-
-          # Tweak Git to be more resilient on CI
           git config --global http.postBuffer 524288000
           git config --global http.maxRequests 2
           git config --global core.compression 0
 
-          rm -rf tensorflow build_output
-          mkdir -p build_output
-          
-          git clone --depth=1 --no-tags https://github.com/tensorflow/tensorflow.git
-          cd tensorflow
+          rm -rf "$GITHUB_WORKSPACE/tensorflow" "$GITHUB_WORKSPACE/build_output"
+          mkdir -p "$GITHUB_WORKSPACE/build_output"
 
-          # Fetch only tag references (without full history)
+          git clone --depth=1 --no-tags https://github.com/tensorflow/tensorflow.git "$GITHUB_WORKSPACE/tensorflow"
+          cd "$GITHUB_WORKSPACE/tensorflow"
+
           git fetch --tags --depth=1
-
           LATEST_TAG=$(git tag -l "v*" | grep -v "rc" | grep -v "alpha" | grep -v "beta" | sort -V | tail -n 1)
           echo "Checking out $LATEST_TAG"
-
-          # Fetch and checkout just that tag commit (still shallow)
-          git fetch --depth=1 origin tag $LATEST_TAG
+          git fetch --depth=1 origin tag "$LATEST_TAG"
           git checkout FETCH_HEAD
-          
-          # Force Bazel 8.0+ for RISC-V support (rules_python 0.33+)
+
           echo "8.0.0" > .bazelversion
 
           echo "tag_name=$LATEST_TAG" >> "$GITHUB_OUTPUT"
 
       - name: Configure TensorFlow
         run: |
-          source $GITHUB_WORKSPACE/tf_env/bin/activate
-          cd tensorflow
-          
-          # Set up build configuration
+          source "$GITHUB_WORKSPACE/tf_env/bin/activate"
+          cd "$GITHUB_WORKSPACE/tensorflow"
+
           export PYTHON_BIN_PATH=$(which python3)
           export PYTHON_LIB_PATH="$($PYTHON_BIN_PATH -c 'import site; print(site.getsitepackages()[0])')"
           export TF_NEED_CUDA=0
@@ -123,94 +114,51 @@ jobs:
           export TF_DOWNLOAD_CLANG=0
           export TF_SET_ANDROID_WORKSPACE=0
           export CC_OPT_FLAGS="-march=native -O3"
-          
-          # Run configure
+
           ./configure
 
       - name: Build TensorFlow
         run: |
-          source $GITHUB_WORKSPACE/tf_env/bin/activate
-          cd tensorflow
-          
-          # Build with limited parallelism to avoid OOM on RISC-V
-          bazel build --jobs=8 \
+          source "$GITHUB_WORKSPACE/tf_env/bin/activate"
+          cd "$GITHUB_WORKSPACE/tensorflow"
+
+          bazel build --jobs=$(nproc) \
             --local_ram_resources=8192 \
             --config=opt \
             //tensorflow/tools/pip_package:build_pip_package
 
       - name: Build wheel package
         run: |
-          source $GITHUB_WORKSPACE/tf_env/bin/activate
-          cd tensorflow
-          
+          source "$GITHUB_WORKSPACE/tf_env/bin/activate"
+          cd "$GITHUB_WORKSPACE/tensorflow"
+
           ./bazel-bin/tensorflow/tools/pip_package/build_pip_package \
-            $GITHUB_WORKSPACE/build_output
+            "$GITHUB_WORKSPACE/build_output"
 
       - name: Get TensorFlow version and set outputs
         id: get-version
         run: |
-          source $GITHUB_WORKSPACE/tf_env/bin/activate
-          
-          WHEEL_FILE=$(ls $GITHUB_WORKSPACE/build_output/*.whl | head -n 1)
+          source "$GITHUB_WORKSPACE/tf_env/bin/activate"
+
+          WHEEL_FILE=$(ls "$GITHUB_WORKSPACE/build_output"/*.whl | head -n 1)
           WHEEL_NAME=$(basename "$WHEEL_FILE")
-          
-          # Extract version from wheel filename
+
           TF_VERSION=$(echo "$WHEEL_NAME" | grep -oP 'tensorflow-\K[0-9]+\.[0-9]+\.[0-9]+')
-          
+
           ASSET_NAME="tensorflow-${TF_VERSION}-riscv64-linux.tar.gz"
           ASSET_PATH="$GITHUB_WORKSPACE/${ASSET_NAME}"
 
-          echo "release_name=TensorFlow ${TF_VERSION} RISC-V" >> $GITHUB_OUTPUT
-          echo "asset_name=$ASSET_NAME" >> $GITHUB_OUTPUT
-          echo "asset_path=$ASSET_PATH" >> $GITHUB_OUTPUT
-          echo "wheel_file=$WHEEL_FILE" >> $GITHUB_OUTPUT
+          echo "release_name=TensorFlow ${TF_VERSION} RISC-V" >> "$GITHUB_OUTPUT"
+          echo "asset_name=$ASSET_NAME" >> "$GITHUB_OUTPUT"
+          echo "asset_path=$ASSET_PATH" >> "$GITHUB_OUTPUT"
 
       - name: Package wheel
         run: |
-          tar -czf ${{ steps.get-version.outputs.asset_path }} \
-            -C $GITHUB_WORKSPACE/build_output .
+          tar -czf "${{ steps.get-version.outputs.asset_path }}" \
+            -C "$GITHUB_WORKSPACE/build_output" .
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ steps.get-version.outputs.asset_name }}
           path: ${{ steps.get-version.outputs.asset_path }}
-
-      - name: Create or push to tag
-        run: |
-          TAG=${{ steps.get-latest-tag.outputs.tag_name }}
-
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-
-          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
-            echo "✅ Tag $TAG already exists. Skipping tag creation." 
-          else
-            echo "🆕 Tag $TAG does not exist. Creating and pushing..."
-            git tag "$TAG"
-            git push origin "$TAG"
-          fi
-
-      - name: Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ steps.get-latest-tag.outputs.tag_name }}
-          name: ${{ steps.get-version.outputs.release_name }}
-          files: ${{ steps.get-version.outputs.asset_path }}
-          body: |
-            TensorFlow build for RISC-V architecture
-            
-            ## Installation
-            ```bash
-            # Extract the archive
-            tar -xzf ${{ steps.get-version.outputs.asset_name }}
-            
-            # Install the wheel
-            pip install tensorflow-*.whl
-            ```
-            
-            ## Requirements
-            - Python 3.8+
-            - NumPy
-            
-            Built on: ${{ github.run_id }}
