@@ -20,10 +20,11 @@ jobs:
         run: |
           sudo apt update
           sudo apt install -y gh jq
-      
+
       - name: Debug available runs
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
           WORKFLOWS=(
             "build-bazelisk.yml"
@@ -34,14 +35,18 @@ jobs:
           )
           for WF in "${WORKFLOWS[@]}"; do
             echo "====== $WF ======"
-            gh run list --workflow="$WF" --limit 5 \
+            gh run list \
+              --repo "$GH_REPO" \
+              --workflow="$WF" \
+              --limit 5 \
               --json databaseId,status,conclusion,headBranch,createdAt \
               | jq '.[]'
-          done          
+          done
 
       - name: Download latest artifacts dynamically
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
           mkdir -p release_assets
 
@@ -59,8 +64,8 @@ jobs:
             echo "──────────────────────────────────────"
             echo "Processing workflow: $WF"
 
-            # Find latest completed+successful run on main branch
             LATEST_RUN_ID=$(gh run list \
+              --repo "$GH_REPO" \
               --workflow="$WF" \
               --branch=main \
               --limit 20 \
@@ -76,8 +81,9 @@ jobs:
 
             echo "✅ Found run ID: $LATEST_RUN_ID for $WF"
 
-            # List artifacts for that run
-            ARTIFACTS=$(gh run view "$LATEST_RUN_ID" --json artifacts \
+            ARTIFACTS=$(gh run view "$LATEST_RUN_ID" \
+              --repo "$GH_REPO" \
+              --json artifacts \
               | jq -r '.artifacts[].name')
 
             if [ -z "$ARTIFACTS" ]; then
@@ -88,11 +94,13 @@ jobs:
 
             for ART in $ARTIFACTS; do
               echo "  ⬇️  Downloading: $ART"
-              gh run download "$LATEST_RUN_ID" --name "$ART" -D release_assets
+              gh run download "$LATEST_RUN_ID" \
+                --repo "$GH_REPO" \
+                --name "$ART" \
+                -D release_assets
             done
           done
 
-          # Report any skipped workflows
           if [ ${#FAILED_WORKFLOWS[@]} -gt 0 ]; then
             echo ""
             echo "⚠️  The following workflows had no successful runs:"
@@ -139,7 +147,6 @@ jobs:
           ALL_PRESENT="${{ steps.verify.outputs.all_present }}"
           MISSING="${{ steps.verify.outputs.missing_artifacts }}"
 
-          # Collect artifact filenames and sizes for the release body
           ARTIFACT_DETAILS=""
           for FILE in release_assets/*; do
             FNAME=$(basename "$FILE")
