@@ -8,11 +8,7 @@ on:
         required: false
         default: 'latest'
   schedule:
-    # Run monthly on the 13th at midnight
-    - cron: "0 0 13 * *"
-  push:
-    branches:
-      - main
+    - cron: "0 0 1 * *"
     paths:
       - '.github/workflows/build-coredns.yml'
 
