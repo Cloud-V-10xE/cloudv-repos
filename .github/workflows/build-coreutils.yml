@@ -1,11 +1,9 @@
 name: Build coreutils for RISC-V
-
 on:
   workflow_dispatch:
   push:
   schedule:
     - cron: "0 0 1 * *"
-
 jobs:
   build:
     runs-on: RISCV64
@@ -16,45 +14,41 @@ jobs:
       release_name: ${{ steps.get-version.outputs.release_name }}
       asset_name: ${{ steps.get-version.outputs.asset_name }}
       asset_path: ${{ steps.get-version.outputs.asset_path }}
-
     steps:
       - name: Install dependencies
         run: |
-         export DEBIAN_FRONTEND=noninteractive
-         sudo apt-get update
-         sudo apt-get install -y \
-           build-essential \
-           libatomic1 \
-           flex \
-           bison \
-           make \
-           git \
-           autoconf \
-           automake \
-           gettext \
-           autopoint \
-           gperf \
-           texinfo \
-           texlive \
-           wget \
-           make \
-           python3
+          export DEBIAN_FRONTEND=noninteractive
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            libatomic1 \
+            flex \
+            bison \
+            make \
+            git \
+            autoconf \
+            automake \
+            gettext \
+            autopoint \
+            gperf \
+            texinfo \
+            texlive \
+            wget \
+            python3
 
-      - name: Force clean Go cache
+      - name: Clean workspace with elevated permissions
         run: |
-          echo "Removing Go module cache forcibly"
-          sudo rm -rf $HOME/go/pkg/mod
-          sudo rm -rf $GOPATH/pkg/mod  # just in case GOPATH is set
-          go clean -modcache || true
+          sudo rm -rf "$GITHUB_WORKSPACE"
+          mkdir -p "$GITHUB_WORKSPACE"
 
       - name: Checkout repo
         uses: actions/checkout@v4
         with:
           clean: false
 
-      - name: Setup Directories
-        run: mkdir -p $GITHUB_WORKSPACE/installed_binaries
-      
+      - name: Setup directories
+        run: mkdir -p "$GITHUB_WORKSPACE/installed_binaries"
+
       - name: Check environment
         run: |
           set -eux
@@ -63,75 +57,61 @@ jobs:
           g++ --version
           ldd --version
 
-      - name: Clone Coreutils from mirror and checkout latest tag
+      - name: Clone Coreutils and checkout latest tag
         id: get-latest-tag
         run: |
           set -eux
-
-          # Tweak Git to be more resilient on CI
           git config --global http.postBuffer 524288000
           git config --global http.maxRequests 2
           git config --global core.compression 0
-
-          rm -rf coreutils installed_binaries
-          git clone --depth=1 --no-tags https://github.com/coreutils/coreutils.git
-          cd coreutils
-
-          # Fetch only tag references (without full history)
+          rm -rf "$GITHUB_WORKSPACE/coreutils"
+          git clone --depth=1 --no-tags https://github.com/coreutils/coreutils.git "$GITHUB_WORKSPACE/coreutils"
+          cd "$GITHUB_WORKSPACE/coreutils"
           git fetch --tags --depth=1
           git submodule update --recursive --remote
-
           LATEST_TAG=$(git tag -l "v*" | sort -V | tail -n 1)
           echo "Checking out $LATEST_TAG"
-
-          # Fetch and checkout just that tag commit (still shallow)
-          git fetch --depth=1 origin tag $LATEST_TAG
+          git fetch --depth=1 origin tag "$LATEST_TAG"
           git checkout FETCH_HEAD
-
           echo "tag_name=$LATEST_TAG" >> "$GITHUB_OUTPUT"
 
-      - name: Set up Directories for Build
-        run: |
-          mkdir installed_binaries
-      
       - name: Configure
         run: |
-          cd coreutils
+          cd "$GITHUB_WORKSPACE/coreutils"
           git config submodule.gnulib.url https://github.com/coreutils/gnulib.git
           ./bootstrap
-          mkdir build
+          mkdir -p build
           cd build
-          ../configure --prefix=$GITHUB_WORKSPACE/installed_binaries
+          ../configure --prefix="$GITHUB_WORKSPACE/installed_binaries"
 
       - name: Build
         run: |
-          cd coreutils/build
-          make -j8
+          cd "$GITHUB_WORKSPACE/coreutils/build"
+          make -j$(nproc)
 
       - name: Install
         run: |
-          cd coreutils/build
+          cd "$GITHUB_WORKSPACE/coreutils/build"
           make install
 
       - name: Verify installation
         run: |
-          cd $GITHUB_WORKSPACE/installed_binaries
-          ./bin/ls --version
+          "$GITHUB_WORKSPACE/installed_binaries/bin/ls" --version
 
       - name: Get Coreutils version and set outputs
         id: get-version
         run: |
-          COREUTILS_VERSION=$($GITHUB_WORKSPACE/installed_binaries/bin/ls --version | head -n1 | awk '{print $4}')
+          COREUTILS_VERSION=$("$GITHUB_WORKSPACE/installed_binaries/bin/ls" --version | head -n1 | awk '{print $4}')
           ASSET_NAME="coreutils-${COREUTILS_VERSION}-riscv64-linux.tar.gz"
           ASSET_PATH="$GITHUB_WORKSPACE/${ASSET_NAME}"
-
-          echo "release_name=Coreutils ${COREUTILS_VERSION} RISC-V" >> $GITHUB_OUTPUT
-          echo "asset_name=$ASSET_NAME" >> $GITHUB_OUTPUT
-          echo "asset_path=$ASSET_PATH" >> $GITHUB_OUTPUT
+          echo "release_name=Coreutils ${COREUTILS_VERSION} RISC-V" >> "$GITHUB_OUTPUT"
+          echo "asset_name=$ASSET_NAME" >> "$GITHUB_OUTPUT"
+          echo "asset_path=$ASSET_PATH" >> "$GITHUB_OUTPUT"
 
       - name: Package binaries
         run: |
-          tar -czf ${{ steps.get-version.outputs.asset_path }} -C ${{ github.workspace }}/installed_binaries .
+          tar -czf "${{ steps.get-version.outputs.asset_path }}" \
+            -C "$GITHUB_WORKSPACE/installed_binaries" .
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
