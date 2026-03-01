@@ -3,7 +3,7 @@ name: Build binutils for RISC-V
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 0 3 * *"
+    - cron: "0 0 1 * *"
   push:
     branches:
       - main
@@ -111,24 +111,3 @@ jobs:
         with:
           name: ${{ steps.get-version.outputs.asset_name }}
           path: ${{ steps.get-version.outputs.asset_path }}
-
-      - name: Create or push to tag
-        run: |
-          TAG=${{ steps.get-latest-tag.outputs.tag_name }}
-
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-
-          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
-            echo "✅ Tag $TAG already exists. Skipping tag creation." 
-          else
-            echo "🆕 Tag $TAG does not exist. Creating and pushing..."
-            git tag "$TAG"
-            git push origin "$TAG"
-          fi
-
-      - name: Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ steps.get-latest-tag.outputs.tag_name }}
-          files: ${{ steps.get-version.outputs.asset_path }}
