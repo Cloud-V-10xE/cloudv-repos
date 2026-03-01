@@ -3,7 +3,7 @@ name: Build Transformers for RISC-V
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 0 * * 1"  # Weekly on Mondays
+    - cron: "0 0 1 * *"  # Monthly on the 1st
 
 jobs:
   build:
