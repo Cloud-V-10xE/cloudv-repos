@@ -1,22 +1,20 @@
 name: Central Release
-
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 1 * * *"  # Adjust for daily or monthly releases
+    - cron: "0 1 * * *"
 
 jobs:
   release:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-
     steps:
       - name: Set release date
         id: date
         run: |
           RELEASE_DATE=$(date +%Y-%m-%d)
-          echo "release_date=$RELEASE_DATE" >> $GITHUB_OUTPUT
+          echo "release_date=$RELEASE_DATE" >> "$GITHUB_OUTPUT"
 
       - name: Install GitHub CLI and jq
         run: |
@@ -28,60 +26,147 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           mkdir -p release_assets
-          
-          WORKFLOWS=("build-bazelisk.yml" "build-coreutils.yml" "build-strace.yml" "build-binutils.yml" "build-transformers.yml")
+
+          WORKFLOWS=(
+            "build-bazelisk.yml"
+            "build-coreutils.yml"
+            "build-strace.yml"
+            "build-binutils.yml"
+            "build-transformers.yml"
+          )
+
+          FAILED_WORKFLOWS=()
 
           for WF in "${WORKFLOWS[@]}"; do
-            echo "Processing workflow $WF"
+            echo "──────────────────────────────────────"
+            echo "Processing workflow: $WF"
 
-            # Find latest successful run on main branch
-            LATEST_RUN_ID=$(gh run list --workflow="$WF" --branch=main --limit 20 --json databaseId,status \
-              | jq -r '.[] | select(.status=="completed") | .databaseId' | head -n1)
+            # Find latest completed+successful run on main branch
+            LATEST_RUN_ID=$(gh run list \
+              --workflow="$WF" \
+              --branch=main \
+              --limit 20 \
+              --json databaseId,status,conclusion \
+              | jq -r '.[] | select(.status=="completed" and .conclusion=="success") | .databaseId' \
+              | head -n1)
 
             if [ -z "$LATEST_RUN_ID" ]; then
-              echo "⚠️ No successful run found for $WF, skipping"
+              echo "⚠️  No successful run found for $WF, skipping"
+              FAILED_WORKFLOWS+=("$WF")
               continue
             fi
 
-            # Download all artifacts from that run
-            ARTIFACTS=$(gh run view $LATEST_RUN_ID --json artifacts | jq -r '.artifacts[].name')
+            echo "✅ Found run ID: $LATEST_RUN_ID for $WF"
+
+            # List artifacts for that run
+            ARTIFACTS=$(gh run view "$LATEST_RUN_ID" --json artifacts \
+              | jq -r '.artifacts[].name')
+
+            if [ -z "$ARTIFACTS" ]; then
+              echo "⚠️  No artifacts found for run $LATEST_RUN_ID of $WF"
+              FAILED_WORKFLOWS+=("$WF")
+              continue
+            fi
 
             for ART in $ARTIFACTS; do
-              echo "Downloading $ART from $WF"
-              gh run download $LATEST_RUN_ID --name "$ART" -D release_assets
+              echo "  ⬇️  Downloading: $ART"
+              gh run download "$LATEST_RUN_ID" --name "$ART" -D release_assets
             done
           done
 
+          # Report any skipped workflows
+          if [ ${#FAILED_WORKFLOWS[@]} -gt 0 ]; then
+            echo ""
+            echo "⚠️  The following workflows had no successful runs:"
+            for WF in "${FAILED_WORKFLOWS[@]}"; do
+              echo "   - $WF"
+            done
+          fi
+
       - name: List downloaded artifacts
-        run: ls -lh release_assets
+        run: |
+          echo "Contents of release_assets:"
+          ls -lh release_assets/
 
       - name: Verify all expected artifacts are present
+        id: verify
         run: |
           EXPECTED=("bazelisk" "coreutils" "strace" "binutils" "transformers")
-          MISSING=0
+          MISSING_LIST=()
+
           for E in "${EXPECTED[@]}"; do
-            if ! ls release_assets | grep -q "$E"; then
-              echo "⚠️ Artifact $E missing!"
-              MISSING=1
+            if ! ls release_assets/ | grep -qi "$E"; then
+              echo "⚠️  Missing artifact: $E"
+              MISSING_LIST+=("$E")
+            else
+              echo "✅ Found artifact: $E"
             fi
           done
-          if [ "$MISSING" -eq 1 ]; then
-            echo "⚠️ Some artifacts are missing but proceeding with release."
+
+          if [ ${#MISSING_LIST[@]} -gt 0 ]; then
+            echo ""
+            echo "⚠️  Missing artifacts: ${MISSING_LIST[*]}"
+            echo "missing_artifacts=${MISSING_LIST[*]}" >> "$GITHUB_OUTPUT"
+            echo "all_present=false" >> "$GITHUB_OUTPUT"
           else
+            echo ""
             echo "✅ All expected artifacts are present"
+            echo "all_present=true" >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Build release notes
+        id: release-notes
+        run: |
+          RELEASE_DATE="${{ steps.date.outputs.release_date }}"
+          ALL_PRESENT="${{ steps.verify.outputs.all_present }}"
+          MISSING="${{ steps.verify.outputs.missing_artifacts }}"
+
+          # Collect artifact filenames and sizes for the release body
+          ARTIFACT_DETAILS=""
+          for FILE in release_assets/*; do
+            FNAME=$(basename "$FILE")
+            FSIZE=$(du -sh "$FILE" | cut -f1)
+            ARTIFACT_DETAILS="${ARTIFACT_DETAILS}\n- \`${FNAME}\` (${FSIZE})"
+          done
+
+          if [ "$ALL_PRESENT" = "true" ]; then
+            STATUS_LINE="✅ All expected artifacts included."
+          else
+            STATUS_LINE="⚠️ Some artifacts were missing and excluded: \`${MISSING}\`"
+          fi
+
+          cat <<EOF > release_notes.md
+          ## RISC-V Binaries — $RELEASE_DATE
+
+          Central release bundling the latest successful builds from all RISC-V build workflows.
+
+          ### Included Artifacts
+          $(echo -e "$ARTIFACT_DETAILS")
+
+          ### Build Status
+          $STATUS_LINE
+
+          ### Workflows
+          | Workflow | Artifact |
+          |----------|----------|
+          | build-bazelisk.yml | Bazelisk binary |
+          | build-coreutils.yml | Coreutils tarball |
+          | build-strace.yml | strace tarball |
+          | build-binutils.yml | Binutils tarball |
+          | build-transformers.yml | Transformers wheel |
+
+          ---
+          *Generated automatically by the Central Release workflow.*
+          EOF
+
+          echo "Release notes written."
+          cat release_notes.md
 
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.date.outputs.release_date }}
-          name: Release ${{ steps.date.outputs.release_date }}
+          tag_name: release-${{ steps.date.outputs.release_date }}
+          name: RISC-V Release ${{ steps.date.outputs.release_date }}
+          body_path: release_notes.md
           files: release_assets/*
-          body: |
-            Central release for date ${{ steps.date.outputs.release_date }}  
-            Includes all latest binaries from build workflows:
-            - Bazelisk
-            - Coreutils
-            - Strace
-            - Binutils
-            - Transformers
+          make_latest: true
