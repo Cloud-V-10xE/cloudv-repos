@@ -3,7 +3,7 @@ name: Central Release
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 0 1 * *"  # Daily at 1:00 AM or monthly if you want
+    - cron: "0 1 * * *"  # Adjust for daily or monthly releases
 
 jobs:
   release:
@@ -18,12 +18,14 @@ jobs:
           RELEASE_DATE=$(date +%Y-%m-%d)
           echo "release_date=$RELEASE_DATE" >> $GITHUB_OUTPUT
 
-      - name: Install GitHub CLI
+      - name: Install GitHub CLI and jq
         run: |
           sudo apt update
           sudo apt install -y gh jq
 
       - name: Download latest artifacts dynamically
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           mkdir -p release_assets
           
@@ -41,20 +43,33 @@ jobs:
               continue
             fi
 
-            # Find artifact name dynamically (just grab the first artifact)
-            ARTIFACT_NAME=$(gh run view $LATEST_RUN_ID --json artifacts | jq -r '.artifacts[0].name')
+            # Download all artifacts from that run
+            ARTIFACTS=$(gh run view $LATEST_RUN_ID --json artifacts | jq -r '.artifacts[].name')
 
-            if [ -z "$ARTIFACT_NAME" ] || [ "$ARTIFACT_NAME" == "null" ]; then
-              echo "⚠️ No artifact found for $WF, skipping"
-              continue
-            fi
-
-            echo "Downloading latest artifact $ARTIFACT_NAME from workflow $WF"
-            gh run download $LATEST_RUN_ID --name "$ARTIFACT_NAME" -D release_assets
+            for ART in $ARTIFACTS; do
+              echo "Downloading $ART from $WF"
+              gh run download $LATEST_RUN_ID --name "$ART" -D release_assets
+            done
           done
 
       - name: List downloaded artifacts
         run: ls -lh release_assets
+
+      - name: Verify all expected artifacts are present
+        run: |
+          EXPECTED=("bazelisk" "coreutils" "strace" "binutils" "transformers")
+          MISSING=0
+          for E in "${EXPECTED[@]}"; do
+            if ! ls release_assets | grep -q "$E"; then
+              echo "⚠️ Artifact $E missing!"
+              MISSING=1
+            fi
+          done
+          if [ "$MISSING" -eq 1 ]; then
+            echo "⚠️ Some artifacts are missing but proceeding with release."
+          else
+            echo "✅ All expected artifacts are present"
+          fi
 
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
@@ -64,4 +79,9 @@ jobs:
           files: release_assets/*
           body: |
             Central release for date ${{ steps.date.outputs.release_date }}  
-            Includes all latest binaries from build workflows
+            Includes all latest binaries from build workflows:
+            - Bazelisk
+            - Coreutils
+            - Strace
+            - Binutils
+            - Transformers
