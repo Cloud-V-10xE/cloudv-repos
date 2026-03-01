@@ -40,6 +40,10 @@ jobs:
            make \
            python3
 
+      - name: Clean Go module cache
+        run: |
+          # Clean Go cache safely
+          go clean -modcache || true
 
       - name: Checkout repo
         uses: actions/checkout@v4
