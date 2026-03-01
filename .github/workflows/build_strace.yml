@@ -1,5 +1,4 @@
 name: Build strace for RISC-V
-
 on:
   workflow_dispatch:
   push:
@@ -16,29 +15,33 @@ jobs:
       release_name: ${{ steps.get-version.outputs.release_name }}
       asset_name: ${{ steps.get-version.outputs.asset_name }}
       asset_path: ${{ steps.get-version.outputs.asset_path }}
-
     steps:
       - name: Install dependencies
         run: |
-         export DEBIAN_FRONTEND=noninteractive
-         sudo apt-get update
-         sudo apt-get install -y \
-           build-essential \
-           make \
-           git \
-           autoconf \
-           automake \
-           wget \
-           make \
-           python3
+          export DEBIAN_FRONTEND=noninteractive
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            make \
+            git \
+            autoconf \
+            automake \
+            wget \
+            python3
 
+      - name: Clean workspace with elevated permissions
+        run: |
+          sudo rm -rf "$GITHUB_WORKSPACE"
+          mkdir -p "$GITHUB_WORKSPACE"
 
       - name: Checkout repo
         uses: actions/checkout@v4
+        with:
+          clean: false
 
-      - name: Setup Directories
-        run: mkdir -p $GITHUB_WORKSPACE/installed_binaries
-      
+      - name: Setup directories
+        run: mkdir -p "$GITHUB_WORKSPACE/installed_binaries"
+
       - name: Check environment
         run: |
           set -eux
@@ -47,74 +50,63 @@ jobs:
           g++ --version
           ldd --version
 
-      - name: Clone strace from mirror and checkout latest tag
+      - name: Clone strace and checkout latest tag
         id: get-latest-tag
         run: |
           set -eux
-
-          # Tweak Git to be more resilient on CI
           git config --global http.postBuffer 524288000
           git config --global http.maxRequests 2
           git config --global core.compression 0
 
-          rm -rf strace installed_binaries
-          git clone --depth=1 --no-tags https://github.com/strace/strace.git
-          cd strace
+          rm -rf "$GITHUB_WORKSPACE/strace"
+          git clone --depth=1 --no-tags https://github.com/strace/strace.git "$GITHUB_WORKSPACE/strace"
+          cd "$GITHUB_WORKSPACE/strace"
 
-          # Fetch only tag references (without full history)
           git fetch --tags --depth=1
           git submodule update --recursive --remote
-
           LATEST_TAG=$(git tag -l "v*" | sort -V | tail -n 1)
           echo "Checking out $LATEST_TAG"
-
-          # Fetch and checkout just that tag commit (still shallow)
-          git fetch --depth=1 origin tag $LATEST_TAG
+          git fetch --depth=1 origin tag "$LATEST_TAG"
           git checkout FETCH_HEAD
 
           echo "tag_name=$LATEST_TAG" >> "$GITHUB_OUTPUT"
 
-      - name: Set up Directories for Build
-        run: |
-          mkdir installed_binaries
-      
       - name: Configure
         run: |
-          cd strace
+          cd "$GITHUB_WORKSPACE/strace"
           ./bootstrap
-          mkdir build
+          mkdir -p build
           cd build
-          ../configure --prefix=$GITHUB_WORKSPACE/installed_binaries
+          ../configure --prefix="$GITHUB_WORKSPACE/installed_binaries"
 
       - name: Build
         run: |
-          cd strace/build
-          make -j32
+          cd "$GITHUB_WORKSPACE/strace/build"
+          make -j$(nproc)
 
       - name: Install
         run: |
-          cd strace/build
+          cd "$GITHUB_WORKSPACE/strace/build"
           make install
 
       - name: Verify installation
         run: |
-          cd $GITHUB_WORKSPACE/installed_binaries
-          ./bin/strace --version
+          "$GITHUB_WORKSPACE/installed_binaries/bin/strace" --version
 
       - name: Get strace version and set outputs
         id: get-version
         run: |
-          STRACE_VERSION=$($GITHUB_WORKSPACE/installed_binaries/bin/strace -V | head -n1 | awk '{print $4}')
+          STRACE_VERSION=$("$GITHUB_WORKSPACE/installed_binaries/bin/strace" -V | head -n1 | awk '{print $4}')
           ASSET_NAME="strace-${STRACE_VERSION}-riscv64-linux.tar.gz"
           ASSET_PATH="$GITHUB_WORKSPACE/${ASSET_NAME}"
-
-          echo "release_name=strace ${STRACE_VERSION} RISC-V" >> $GITHUB_OUTPUT
-          echo "asset_name=$ASSET_NAME" >> $GITHUB_OUTPUT
-          echo "asset_path=$ASSET_PATH" >> $GITHUB_OUTPUT
+          echo "release_name=strace ${STRACE_VERSION} RISC-V" >> "$GITHUB_OUTPUT"
+          echo "asset_name=$ASSET_NAME" >> "$GITHUB_OUTPUT"
+          echo "asset_path=$ASSET_PATH" >> "$GITHUB_OUTPUT"
 
       - name: Package binaries
         run: |
-          tar -czf ${{ steps.get-version.outputs.asset_path }} -C ${{ github.workspace }}/installed_binaries .
+          tar -czf "${{ steps.get-version.outputs.asset_path }}" \
+            -C "$GITHUB_WORKSPACE/installed_binaries" .
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
