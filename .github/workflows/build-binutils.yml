@@ -1,10 +1,9 @@
 name: Build binutils for RISC-V
-
 on:
   workflow_dispatch:
   schedule:
     - cron: "0 0 1 * *"
-    
+
 jobs:
   build:
     runs-on: RISCV64
@@ -15,23 +14,29 @@ jobs:
       release_name: ${{ steps.get-version.outputs.release_name }}
       asset_name: ${{ steps.get-version.outputs.asset_name }}
       asset_path: ${{ steps.get-version.outputs.asset_path }}
-
     steps:
       - name: Install dependencies
         run: |
-         sudo apt-get update
-         sudo apt-get install -y \
-           build-essential \
-           libatomic1 libgmp-dev libmpfr-dev libmpc-dev texinfo \
-           bison flex libtool autoconf automake patch \
-           libncurses5-dev
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            libatomic1 libgmp-dev libmpfr-dev libmpc-dev texinfo \
+            bison flex libtool autoconf automake patch \
+            libncurses5-dev
+
+      - name: Clean workspace with elevated permissions
+        run: |
+          sudo rm -rf "$GITHUB_WORKSPACE"
+          mkdir -p "$GITHUB_WORKSPACE"
 
       - name: Checkout repo
         uses: actions/checkout@v4
+        with:
+          clean: false
 
-      - name: Setup Directories
-        run: mkdir -p $GITHUB_WORKSPACE/installed_binaries
-      
+      - name: Setup directories
+        run: mkdir -p "$GITHUB_WORKSPACE/installed_binaries"
+
       - name: Check environment
         run: |
           set -eux
@@ -44,64 +49,57 @@ jobs:
         id: get-latest-tag
         run: |
           set -eux
-
-          # Tweak Git to be more resilient on CI
           git config --global http.postBuffer 524288000
           git config --global http.maxRequests 2
           git config --global core.compression 0
 
-          rm -rf binutils-gdb installed_binaries
-          git clone --depth=1 --no-tags git://sourceware.org/git/binutils-gdb.git
-          cd binutils-gdb
+          rm -rf "$GITHUB_WORKSPACE/binutils-gdb"
+          git clone --depth=1 --no-tags git://sourceware.org/git/binutils-gdb.git "$GITHUB_WORKSPACE/binutils-gdb"
+          cd "$GITHUB_WORKSPACE/binutils-gdb"
 
-          # Fetch only tag references (without full history)
           git fetch --tags --depth=1
-
           LATEST_TAG=$(git tag -l "gdb-*-release" | sort -V | tail -n 1)
           echo "Checking out $LATEST_TAG"
-
-          # Fetch and checkout just that tag commit (still shallow)
-          git fetch --depth=1 origin tag $LATEST_TAG
+          git fetch --depth=1 origin tag "$LATEST_TAG"
           git checkout FETCH_HEAD
 
           echo "tag_name=$LATEST_TAG" >> "$GITHUB_OUTPUT"
-      
+
       - name: Configure
         run: |
-          cd binutils-gdb
-          mkdir build
+          cd "$GITHUB_WORKSPACE/binutils-gdb"
+          mkdir -p build
           cd build
-          ../configure --prefix=$GITHUB_WORKSPACE/installed_binaries
+          ../configure --prefix="$GITHUB_WORKSPACE/installed_binaries"
 
       - name: Build
         run: |
-          cd binutils-gdb/build
-          make -j32
+          cd "$GITHUB_WORKSPACE/binutils-gdb/build"
+          make -j$(nproc)
 
       - name: Install
         run: |
-          cd binutils-gdb/build
+          cd "$GITHUB_WORKSPACE/binutils-gdb/build"
           make install
 
       - name: Verify installation
         run: |
-          cd $GITHUB_WORKSPACE/installed_binaries
-          ./bin/as --version
+          "$GITHUB_WORKSPACE/installed_binaries/bin/as" --version
 
       - name: Get binutils version and set outputs
         id: get-version
         run: |
-          BINUTILS_VERSION="$($GITHUB_WORKSPACE/installed_binaries/bin/as --version | head -n1 | awk '{print $5}')"
+          BINUTILS_VERSION="$("$GITHUB_WORKSPACE/installed_binaries/bin/as" --version | head -n1 | awk '{print $5}')"
           ASSET_NAME="binutils-${BINUTILS_VERSION}-riscv64-linux.tar.gz"
           ASSET_PATH="$GITHUB_WORKSPACE/${ASSET_NAME}"
-
-          echo "release_name=Binutils ${BINUTILS_VERSION} RISC-V" >> $GITHUB_OUTPUT
-          echo "asset_name=$ASSET_NAME" >> $GITHUB_OUTPUT
-          echo "asset_path=$ASSET_PATH" >> $GITHUB_OUTPUT
+          echo "release_name=Binutils ${BINUTILS_VERSION} RISC-V" >> "$GITHUB_OUTPUT"
+          echo "asset_name=$ASSET_NAME" >> "$GITHUB_OUTPUT"
+          echo "asset_path=$ASSET_PATH" >> "$GITHUB_OUTPUT"
 
       - name: Package binaries
         run: |
-          tar -czf ${{ steps.get-version.outputs.asset_path }} -C ${{ github.workspace }}/installed_binaries .
+          tar -czf "${{ steps.get-version.outputs.asset_path }}" \
+            -C "$GITHUB_WORKSPACE/installed_binaries" .
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
