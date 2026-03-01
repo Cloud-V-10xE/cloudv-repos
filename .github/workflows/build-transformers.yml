@@ -2,9 +2,6 @@ name: Build Transformers for RISC-V
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - main
   schedule:
     - cron: "0 0 * * 1"  # Weekly on Mondays
 
@@ -205,43 +202,3 @@ jobs:
         with:
           name: ${{ steps.get-version.outputs.asset_name }}
           path: ${{ steps.get-version.outputs.asset_path }}
-
-      - name: Create or push to tag
-        run: |
-          TAG=${{ steps.get-latest-tag.outputs.tag_name }}
-
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-
-          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
-            echo "✅ Tag $TAG already exists. Skipping tag creation." 
-          else
-            echo "🆕 Tag $TAG does not exist. Creating and pushing..."
-            git tag "$TAG"
-            git push origin "$TAG"
-          fi
-
-      - name: Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ steps.get-latest-tag.outputs.tag_name }}
-          name: ${{ steps.get-version.outputs.release_name }}
-          files: ${{ steps.get-version.outputs.asset_path }}
-          body: |
-            ## Transformers RISC-V Build
-            
-            Python wheel for Hugging Face Transformers compiled for RISC-V architecture.
-            
-            **Installation:**
-            ```bash
-            # Install PyTorch for RISC-V first
-            pip install https://github.com/alitariq4589/pytorch-riscv/releases/download/v2.10.0/torch-2.10.0a0+git449b176-cp312-cp312-linux_riscv64.whl
-            
-            # Install Transformers
-            pip install ${{ steps.get-version.outputs.asset_name }}
-            ```
-            
-            **Requirements:**
-            - Python 3.12
-            - RISC-V 64-bit Linux
-            - PyTorch RISC-V (see link above)
